@@ -1,49 +1,100 @@
 name: build-postgres-pgbackrest
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/postgres-pgbackrest
-  POSTGRES_VERSION: "18.6"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4          # pin to commit SHA
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Parse version and image name
+        id: ver
+        run: |
+          v=$(sed -n 's/^FROM postgres:\([0-9][0-9.]*\)@sha256:.*/\1/p' Dockerfile)
+          test -n "$v" || { echo "FROM must be postgres:<version>@sha256:<digest>"; exit 1; }
+          echo "pg=$v" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/postgres-pgbackrest" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v3   # pin to commit SHA
+
+      - name: Build (local only)
+        uses: docker/build-push-action@v6      # pin to commit SHA
         with:
-          registry: ${{ env.REGISTRY }}
+          context: .
+          load: true
+          push: false
+          tags: ci-test:latest
+
+      - name: Smoke test
+        env:
+          PG: ${{ steps.ver.outputs.pg }}
+        run: |
+          set -euo pipefail
+          docker run --rm ci-test:latest postgres --version | grep -F "$PG"
+          docker run --rm --user postgres ci-test:latest pgbackrest version
+          docker run -d --name t -e POSTGRES_PASSWORD=ci-only ci-test:latest
+          ok=0
+          for i in $(seq 1 30); do
+            if docker exec t pg_isready -U postgres -q; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs t | tail -n 20
+          docker rm -f t
+          [ "$ok" = 1 ]
+
+      - name: Vulnerability scan (fail on fixable CRITICAL)
+        uses: aquasecurity/trivy-action@PIN_LATEST_RELEASE_SHA
+        with:
+          image-ref: ci-test:latest
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - uses: docker/login-action@v3           # pin to commit SHA
+        with:
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v5        # pin to commit SHA
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.ver.outputs.image }}
           tags: |
-            type=raw,value=${{ env.POSTGRES_VERSION }}
-            type=sha,prefix=${{ env.POSTGRES_VERSION }}-,format=short
+            type=raw,value=${{ steps.ver.outputs.pg }}
+            type=raw,value=${{ steps.ver.outputs.pg }}-{{date 'YYYYMMDD'}}-{{sha}}
 
-      - uses: docker/build-push-action@v6
+      - name: Push the tested image
+        id: push
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          MAIN_TAG: ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.pg }}
+        run: |
+          set -euo pipefail
+          for t in $TAGS; do
+            docker tag ci-test:latest "$t"
+            docker push "$t"
+          done
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$MAIN_TAG" | cut -d@ -f2)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/attest-build-provenance@v3   # pin to commit SHA
         with:
-          context: .
-          push: true
-          build-args: |
-            POSTGRES_VERSION=${{ env.POSTGRES_VERSION }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          subject-name: ${{ steps.ver.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Print digest for deployment
+        run: echo "Deploy: ${{ steps.ver.outputs.image }}@${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
