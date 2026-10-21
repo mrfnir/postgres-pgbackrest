@@ -55,7 +55,7 @@ jobs:
           [ "$ok" = 1 ]
 
       - name: Vulnerability scan (fail on fixable CRITICAL)
-        uses: aquasecurity/trivy-action@PIN_LATEST_RELEASE_SHA
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ci-test:latest
           severity: CRITICAL
@@ -97,4 +97,5 @@ jobs:
           push-to-registry: true
 
       - name: Print digest for deployment
-        run: echo "Deploy: ${{ steps.ver.outputs.image }}@${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "Deploy: ${{ steps.ver.outputs.image }}@${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
