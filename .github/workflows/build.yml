@@ -44,14 +44,14 @@ jobs:
           set -euo pipefail
           docker run --rm ci-test:latest postgres --version | grep -F "$PG"
           docker run --rm --user postgres ci-test:latest pgbackrest version
-          docker run -d --name t -e POSTGRES_PASSWORD=ci-only ci-test:latest
+          docker run -d --name pgtest -e POSTGRES_PASSWORD=ci-only ci-test:latest
           ok=0
           for i in $(seq 1 30); do
-            if docker exec t pg_isready -U postgres -q; then ok=1; break; fi
+            if docker exec pgtest pg_isready -U postgres -q; then ok=1; break; fi
             sleep 2
           done
-          docker logs t | tail -n 20
-          docker rm -f t
+          docker logs pgtest | tail -n 20
+          docker rm -f pgtest
           [ "$ok" = 1 ]
 
       - name: Vulnerability scan (fail on fixable CRITICAL)
