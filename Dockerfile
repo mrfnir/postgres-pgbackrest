@@ -1,4 +1,4 @@
-FROM postgres:18.6@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32
+FROM postgres:18.6@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends pgbackrest \
